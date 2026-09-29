@@ -125,6 +125,27 @@ volatile uint8_t  emu_meter_life = 0;
 volatile uint32_t emu_can_hal_error = 0;
 volatile uint32_t emu_bad_dlc_count = 0;
 
+/* Diagnostics: CAN register state */
+volatile uint32_t emu_can_esr = 0;      /* Error Status Register */
+volatile uint32_t emu_can_tsr = 0;      /* Transmit Status Register */
+volatile uint32_t emu_can_rf1r = 0;     /* Receive FIFO 1 Register */
+volatile uint8_t  emu_can_rec = 0;      /* Receive Error Counter */
+volatile uint8_t  emu_can_tec = 0;      /* Transmit Error Counter */
+
+/* Diagnostics: TX operations */
+volatile uint32_t emu_tx_attempt_count = 0;
+volatile uint32_t emu_tx_hal_ok_count = 0;
+volatile uint32_t emu_tx_hal_busy_count = 0;
+volatile uint32_t emu_tx_hal_error_count = 0;
+
+/* Diagnostics: Initialization status */
+volatile uint32_t emu_init_filter_result = 0;
+volatile uint32_t emu_init_start_result = 0;
+volatile uint32_t emu_init_notify_result = 0;
+
+/* Diagnostics: Main loop alive counter */
+volatile uint32_t emu_main_loop_alive = 0;
+
 /* -------- Internal state -------- */
 static CAN_RxHeaderTypeDef rxh;
 static CAN_TxHeaderTypeDef txh;
@@ -204,17 +225,30 @@ static void led_warning_set(uint8_t state)
 static void send_handshake(void)
 {
     uint8_t tx[8] = {0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55};
+    HAL_StatusTypeDef result;
 
     txh.ExtId = EZK_ID_MCU_TO_VCU_1;
     txh.IDE   = CAN_ID_EXT;
     txh.RTR   = CAN_RTR_DATA;
     txh.DLC   = 8;
 
+    emu_tx_attempt_count++;
+
     if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) > 0)
     {
-        if (HAL_CAN_AddTxMessage(&hcan, &txh, tx, &tx_mailbox) == HAL_OK)
+        result = HAL_CAN_AddTxMessage(&hcan, &txh, tx, &tx_mailbox);
+        if (result == HAL_OK)
         {
+            emu_tx_hal_ok_count++;
             emu_handshake_tx_count++;
+        }
+        else if (result == HAL_BUSY)
+        {
+            emu_tx_hal_busy_count++;
+        }
+        else
+        {
+            emu_tx_hal_error_count++;
         }
     }
 }
@@ -452,13 +486,17 @@ void EZK_Emulator_Init(void)
     f.FilterActivation = CAN_FILTER_ENABLE;
     f.SlaveStartFilterBank = 14;
 
-    if (HAL_CAN_ConfigFilter(&hcan, &f) != HAL_OK)
+    /* Record initialization results */
+    emu_init_filter_result = HAL_CAN_ConfigFilter(&hcan, &f);
+    if (emu_init_filter_result != HAL_OK)
         Error_Handler();
 
-    if (HAL_CAN_Start(&hcan) != HAL_OK)
+    emu_init_start_result = HAL_CAN_Start(&hcan);
+    if (emu_init_start_result != HAL_OK)
         Error_Handler();
 
-    if (HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO1_MSG_PENDING) != HAL_OK)
+    emu_init_notify_result = HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO1_MSG_PENDING);
+    if (emu_init_notify_result != HAL_OK)
         Error_Handler();
 
     /* Initialize LED state */
@@ -479,7 +517,18 @@ void EZK_Emulator_Task(void)
     uint32_t now = HAL_GetTick();
     uint32_t time_since_command;
 
+    emu_main_loop_alive++;
     emu_can_hal_error = HAL_CAN_GetError(&hcan);
+
+    /* Capture CAN register state for diagnostics */
+    if (hcan.Instance == CAN1)
+    {
+        emu_can_esr = hcan.Instance->ESR;
+        emu_can_tsr = hcan.Instance->TSR;
+        emu_can_rf1r = hcan.Instance->RF1R;
+        emu_can_rec = (emu_can_esr >> 24) & 0xFF;
+        emu_can_tec = (emu_can_esr >> 16) & 0xFF;
+    }
 
     /* Phase 1: Before handshake - send 0x55 pattern periodically */
     if (!emu_handshake_established)

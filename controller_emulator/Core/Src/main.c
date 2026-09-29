@@ -43,7 +43,7 @@
 CAN_HandleTypeDef hcan;
 
 /* USER CODE BEGIN PV */
-
+volatile uint32_t emu_main_loop_alive_counter = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -100,6 +100,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    emu_main_loop_alive_counter++;
     EZK_Emulator_Task();
   }
   /* USER CODE END 3 */
